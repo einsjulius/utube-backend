@@ -1,3 +1,4 @@
 flask
 flask-cors
 yt-dlp>=2024.12.13
+imageio-ffmpeg
