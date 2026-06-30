@@ -1,12 +1,12 @@
 from flask import Flask, request, send_file, jsonify
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 import yt_dlp
 import tempfile
 import os
 import re
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins="*", supports_credentials=False)
 
 QUALITY_MAP_VIDEO = {
     '4k':   'bestvideo[height<=2160]+bestaudio/best[height<=2160]',
@@ -51,7 +51,8 @@ def index():
     })
 
 
-@app.route('/download', methods=['POST'])
+@app.route('/download', methods=['POST', 'OPTIONS'])
+@cross_origin()
 def download():
     data        = request.json
     url         = data.get('url')
