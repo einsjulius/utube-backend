@@ -1,9 +1,26 @@
 from flask import Flask, request, send_file, jsonify, make_response
 from flask_cors import CORS, cross_origin
-import yt_dlp
 import tempfile
 import os
 import re
+import subprocess
+import sys
+
+# Force-upgrade yt-dlp to the latest version BEFORE importing it.
+# YouTube changes its site frequently, and an outdated yt-dlp build
+# is the most common cause of "Requested format is not available"
+# or sudden extraction failures. This must run before `import yt_dlp`
+# so the freshly installed version is the one actually loaded.
+try:
+    subprocess.run(
+        [sys.executable, '-m', 'pip', 'install', '--upgrade', '--quiet', 'yt-dlp'],
+        check=True, timeout=90
+    )
+    print('✓ yt-dlp upgraded to latest version')
+except Exception as e:
+    print(f'⚠ Could not auto-upgrade yt-dlp: {e}')
+
+import yt_dlp
 
 app = Flask(__name__)
 CORS(app, origins="*", supports_credentials=False)
@@ -56,7 +73,8 @@ def index():
     cookie_status = "loaded" if COOKIE_FILE else "missing"
     return jsonify({
         'status': 'U Tube Video Loader backend running ✓',
-        'cookies': cookie_status
+        'cookies': cookie_status,
+        'yt_dlp_version': yt_dlp.version.__version__
     })
 
 
