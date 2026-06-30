@@ -23,7 +23,7 @@ except Exception as e:
 import yt_dlp
 
 app = Flask(__name__)
-CORS(app, origins="*", supports_credentials=False)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 COOKIE_FILE = None
 
@@ -85,11 +85,7 @@ def debug_formats():
     plus the exact error if extraction fails. Use this to diagnose
     'Requested format is not available' errors."""
     if request.method == 'OPTIONS':
-        response = make_response()
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        return response, 204
+        return make_response(), 204
 
     data = request.json
     url = data.get('url')
@@ -138,11 +134,7 @@ def debug_formats():
 @cross_origin()
 def download():
     if request.method == 'OPTIONS':
-        response = make_response()
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        return response, 204
+        return make_response(), 204
 
     data        = request.json
     url         = data.get('url')
@@ -230,14 +222,12 @@ def download():
     safe_name = re.sub(r'[^\w\s\-.]', '', files[0]).strip()
     mime      = 'audio/mpeg' if fmt == 'mp3' else 'video/mp4'
 
-    response = make_response(send_file(
+    return send_file(
         filepath,
         as_attachment=True,
         download_name=safe_name,
         mimetype=mime,
-    ))
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    return response
+    )
 
 
 if __name__ == '__main__':
