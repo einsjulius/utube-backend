@@ -78,20 +78,6 @@ def index():
     })
 
 
-def build_video_format_string(target_height):
-    """
-    Build a format selector that picks the best video stream at or below
-    the target height, falling back gracefully if that exact bucket
-    isn't available for this particular video.
-    """
-    return (
-        f'bestvideo[height<={target_height}]+bestaudio/'
-        f'best[height<={target_height}]/'
-        f'bestvideo+bestaudio/'
-        f'best'
-    )
-
-
 @app.route('/debug', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def debug_formats():
@@ -169,65 +155,63 @@ def download():
     if not url:
         return jsonify({'error': 'No URL provided'}), 400
 
-    tmpdir = tempfile.mkdtemp()
-
-    base_opts = {
-        'outtmpl': os.path.join(tmpdir, '%(title)s.%(ext)s'),
+    base_opts_template = {
         'addmetadata': embed_meta,
         'writethumbnail': write_thumb,
         'http_headers': BASE_HEADERS,
         'noplaylist': True,
     }
-
     if COOKIE_FILE:
-        base_opts['cookiefile'] = COOKIE_FILE
+        base_opts_template['cookiefile'] = COOKIE_FILE
 
     if fmt == 'mp3':
-        ydl_opts = {
-            **base_opts,
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': QUALITY_MAP_AUDIO.get(quality, '192'),
-            }],
-        }
-        if embed_subs:
-            ydl_opts['writesubtitles'] = True
+        format_attempts = ['bestaudio/best', 'best']
     else:
         target_height = TARGET_HEIGHTS.get(quality, 1080)
-        ydl_opts = {
-            **base_opts,
-            'format': build_video_format_string(target_height),
-            'merge_output_format': 'mp4',
-        }
-        if embed_subs:
-            ydl_opts['writesubtitles'] = True
-            ydl_opts['embedsubtitles'] = True
-
-    # Try the requested format chain, then progressively simpler fallbacks
-    attempts = [ydl_opts]
-
-    if fmt != 'mp3':
-        # Fallback 1: plain best video+audio combo, no height filter at all
-        attempts.append({**ydl_opts, 'format': 'bestvideo+bestaudio/best'})
-        # Fallback 2: single progressive stream (already muxed, most compatible)
-        attempts.append({**ydl_opts, 'format': 'best'})
-    else:
-        attempts.append({**ydl_opts, 'format': 'best'})
+        # Each string here is tried in full before moving to the next.
+        # yt-dlp evaluates "/" as "try left, if it fails try right" WITHIN
+        # one string, but mixing a merge selector or already-failed temp
+        # files across separate YoutubeDL() calls can cause false failures,
+        # so we give each attempt its own clean temp dir.
+        format_attempts = [
+            f'bestvideo[height<={target_height}]+bestaudio/best[height<={target_height}]',
+            'bestvideo+bestaudio/best',
+            'best',
+        ]
 
     last_error = None
     succeeded = False
+    final_tmpdir = None
 
-    for attempt_opts in attempts:
+    for fmt_string in format_attempts:
+        tmpdir = tempfile.mkdtemp()
+
+        ydl_opts = {
+            **base_opts_template,
+            'outtmpl': os.path.join(tmpdir, '%(title)s.%(ext)s'),
+            'format': fmt_string,
+        }
+
+        if fmt == 'mp3':
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': QUALITY_MAP_AUDIO.get(quality, '192'),
+            }]
+            if embed_subs:
+                ydl_opts['writesubtitles'] = True
+        else:
+            ydl_opts['merge_output_format'] = 'mp4'
+            if embed_subs:
+                ydl_opts['writesubtitles'] = True
+                ydl_opts['embedsubtitles'] = True
+
         try:
-            with yt_dlp.YoutubeDL(attempt_opts) as ydl:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
             succeeded = True
+            final_tmpdir = tmpdir
             break
-        except yt_dlp.utils.DownloadError as e:
-            last_error = str(e)
-            continue
         except Exception as e:
             last_error = str(e)
             continue
@@ -236,13 +220,13 @@ def download():
         return jsonify({'error': last_error or 'Download failed for unknown reasons'}), 500
 
     files = [
-        f for f in os.listdir(tmpdir)
+        f for f in os.listdir(final_tmpdir)
         if f.endswith(('.mp4', '.mp3', '.webm', '.m4a', '.ogg', '.mkv'))
     ]
     if not files:
         return jsonify({'error': 'No output file was created'}), 500
 
-    filepath  = os.path.join(tmpdir, files[0])
+    filepath  = os.path.join(final_tmpdir, files[0])
     safe_name = re.sub(r'[^\w\s\-.]', '', files[0]).strip()
     mime      = 'audio/mpeg' if fmt == 'mp3' else 'video/mp4'
 
