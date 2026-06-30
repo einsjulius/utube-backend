@@ -92,6 +92,62 @@ def build_video_format_string(target_height):
     )
 
 
+@app.route('/debug', methods=['POST', 'OPTIONS'])
+@cross_origin()
+def debug_formats():
+    """Returns the raw list of formats yt-dlp can see for a given URL,
+    plus the exact error if extraction fails. Use this to diagnose
+    'Requested format is not available' errors."""
+    if request.method == 'OPTIONS':
+        response = make_response()
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        return response, 204
+
+    data = request.json
+    url = data.get('url')
+    if not url:
+        return jsonify({'error': 'No URL provided'}), 400
+
+    opts = {
+        'http_headers': BASE_HEADERS,
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': False,
+    }
+    if COOKIE_FILE:
+        opts['cookiefile'] = COOKIE_FILE
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        formats = [
+            {
+                'format_id': f.get('format_id'),
+                'ext': f.get('ext'),
+                'height': f.get('height'),
+                'vcodec': f.get('vcodec'),
+                'acodec': f.get('acodec'),
+                'filesize': f.get('filesize'),
+            }
+            for f in info.get('formats', [])
+        ]
+        return jsonify({
+            'title': info.get('title'),
+            'extractor': info.get('extractor'),
+            'format_count': len(formats),
+            'formats': formats,
+            'cookie_file_used': bool(COOKIE_FILE),
+        })
+    except Exception as e:
+        return jsonify({
+            'error': str(e),
+            'error_type': type(e).__name__,
+            'cookie_file_used': bool(COOKIE_FILE),
+        }), 500
+
+
 @app.route('/download', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def download():
