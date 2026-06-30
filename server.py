@@ -8,21 +8,6 @@ import re
 app = Flask(__name__)
 CORS(app, origins="*", supports_credentials=False)
 
-# Each entry is a list of formats tried in order until one works
-QUALITY_MAP_VIDEO = {
-    '4k':   'bestvideo[height<=2160]+bestaudio/bestvideo[height<=1080]+bestaudio/best',
-    '1440': 'bestvideo[height<=1440]+bestaudio/bestvideo[height<=1080]+bestaudio/best',
-    '1080': 'bestvideo[height<=1080]+bestaudio/bestvideo[height<=720]+bestaudio/best',
-    '720':  'bestvideo[height<=720]+bestaudio/bestvideo[height<=480]+bestaudio/best',
-    '480':  'bestvideo[height<=480]+bestaudio/bestvideo[height<=360]+bestaudio/best',
-    '360':  'bestvideo[height<=360]+bestaudio/best',
-}
-
-QUALITY_MAP_AUDIO = {
-    '320': '320', '256': '256', '192': '192',
-    '128': '128', '96': '96',   '64':  '64',
-}
-
 COOKIE_FILE = None
 
 def setup_cookies():
@@ -41,6 +26,29 @@ def setup_cookies():
 
 setup_cookies()
 
+BASE_HEADERS = {
+    'User-Agent': (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/125.0.0.0 Safari/537.36'
+    )
+}
+
+# Target heights for each requested quality tier, highest first
+TARGET_HEIGHTS = {
+    '4k':   2160,
+    '1440': 1440,
+    '1080': 1080,
+    '720':  720,
+    '480':  480,
+    '360':  360,
+}
+
+QUALITY_MAP_AUDIO = {
+    '320': '320', '256': '256', '192': '192',
+    '128': '128', '96': '96',   '64':  '64',
+}
+
 
 @app.route('/')
 @cross_origin()
@@ -50,6 +58,20 @@ def index():
         'status': 'U Tube Video Loader backend running ✓',
         'cookies': cookie_status
     })
+
+
+def build_video_format_string(target_height):
+    """
+    Build a format selector that picks the best video stream at or below
+    the target height, falling back gracefully if that exact bucket
+    isn't available for this particular video.
+    """
+    return (
+        f'bestvideo[height<={target_height}]+bestaudio/'
+        f'best[height<={target_height}]/'
+        f'bestvideo+bestaudio/'
+        f'best'
+    )
 
 
 @app.route('/download', methods=['POST', 'OPTIONS'])
@@ -79,14 +101,8 @@ def download():
         'outtmpl': os.path.join(tmpdir, '%(title)s.%(ext)s'),
         'addmetadata': embed_meta,
         'writethumbnail': write_thumb,
-        'ignoreerrors': False,
-        'http_headers': {
-            'User-Agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/125.0.0.0 Safari/537.36'
-            )
-        },
+        'http_headers': BASE_HEADERS,
+        'noplaylist': True,
     }
 
     if COOKIE_FILE:
@@ -105,39 +121,49 @@ def download():
         if embed_subs:
             ydl_opts['writesubtitles'] = True
     else:
+        target_height = TARGET_HEIGHTS.get(quality, 1080)
         ydl_opts = {
             **base_opts,
-            'format': QUALITY_MAP_VIDEO.get(quality, 'bestvideo+bestaudio/best'),
+            'format': build_video_format_string(target_height),
             'merge_output_format': 'mp4',
         }
         if embed_subs:
             ydl_opts['writesubtitles'] = True
             ydl_opts['embedsubtitles'] = True
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-    except yt_dlp.utils.DownloadError as e:
-        error_msg = str(e)
-        # If requested quality not available, retry with best available
-        if 'Requested format is not available' in error_msg or 'format' in error_msg.lower():
-            try:
-                fallback_opts = {
-                    **ydl_opts,
-                    'format': 'bestaudio/best' if fmt == 'mp3' else 'bestvideo+bestaudio/best',
-                }
-                with yt_dlp.YoutubeDL(fallback_opts) as ydl2:
-                    ydl2.download([url])
-            except Exception as e2:
-                return jsonify({'error': str(e2)}), 500
-        else:
-            return jsonify({'error': error_msg}), 500
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    # Try the requested format chain, then progressively simpler fallbacks
+    attempts = [ydl_opts]
+
+    if fmt != 'mp3':
+        # Fallback 1: plain best video+audio combo, no height filter at all
+        attempts.append({**ydl_opts, 'format': 'bestvideo+bestaudio/best'})
+        # Fallback 2: single progressive stream (already muxed, most compatible)
+        attempts.append({**ydl_opts, 'format': 'best'})
+    else:
+        attempts.append({**ydl_opts, 'format': 'best'})
+
+    last_error = None
+    succeeded = False
+
+    for attempt_opts in attempts:
+        try:
+            with yt_dlp.YoutubeDL(attempt_opts) as ydl:
+                ydl.download([url])
+            succeeded = True
+            break
+        except yt_dlp.utils.DownloadError as e:
+            last_error = str(e)
+            continue
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+    if not succeeded:
+        return jsonify({'error': last_error or 'Download failed for unknown reasons'}), 500
 
     files = [
         f for f in os.listdir(tmpdir)
-        if f.endswith(('.mp4', '.mp3', '.webm', '.m4a', '.ogg'))
+        if f.endswith(('.mp4', '.mp3', '.webm', '.m4a', '.ogg', '.mkv'))
     ]
     if not files:
         return jsonify({'error': 'No output file was created'}), 500
