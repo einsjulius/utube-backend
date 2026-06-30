@@ -202,13 +202,26 @@ def download():
                 ydl_opts['writesubtitles'] = True
         else:
             ydl_opts['merge_output_format'] = 'mp4'
+            # Force a remux/merge postprocessor as a safety net — in some
+            # environments yt-dlp picks an already-progressive format (one
+            # file, video+audio together) and merge_output_format alone
+            # doesn't trigger ffmpeg, which is fine; but if it instead
+            # grabs separate video-only + audio-only streams, this ensures
+            # ffmpeg is actually invoked to combine them losslessly.
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegVideoRemuxer',
+                'preferedformat': 'mp4',
+            }]
             if embed_subs:
                 ydl_opts['writesubtitles'] = True
                 ydl_opts['embedsubtitles'] = True
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+                info = ydl.extract_info(url, download=True)
+                chosen_format = info.get('format_id', 'unknown')
+                chosen_acodec = info.get('acodec', 'unknown')
+                print(f"✓ Downloaded format_id={chosen_format} acodec={chosen_acodec}")
             succeeded = True
             final_tmpdir = tmpdir
             break
