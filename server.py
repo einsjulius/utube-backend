@@ -21,6 +21,12 @@ except Exception as e:
     print(f'⚠ Could not auto-upgrade yt-dlp: {e}')
 
 import yt_dlp
+import imageio_ffmpeg
+
+# imageio-ffmpeg ships a self-contained ffmpeg binary, so we don't depend
+# on apt-get / system packages being available in the build environment.
+FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+print(f"✓ Using bundled ffmpeg at {FFMPEG_PATH}")
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -97,6 +103,7 @@ def debug_formats():
         'noplaylist': True,
         'quiet': True,
         'no_warnings': False,
+        'ffmpeg_location': FFMPEG_PATH,
     }
     if COOKIE_FILE:
         opts['cookiefile'] = COOKIE_FILE
@@ -152,6 +159,7 @@ def download():
         'writethumbnail': write_thumb,
         'http_headers': BASE_HEADERS,
         'noplaylist': True,
+        'ffmpeg_location': FFMPEG_PATH,
     }
     if COOKIE_FILE:
         base_opts_template['cookiefile'] = COOKIE_FILE
