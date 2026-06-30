@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, send_file, jsonify, make_response
 from flask_cors import CORS, cross_origin
 import yt_dlp
 import tempfile
@@ -8,13 +8,14 @@ import re
 app = Flask(__name__)
 CORS(app, origins="*", supports_credentials=False)
 
+# Each entry is a list of formats tried in order until one works
 QUALITY_MAP_VIDEO = {
-    '4k':   'bestvideo[height<=2160]+bestaudio/best[height<=2160]',
-    '1440': 'bestvideo[height<=1440]+bestaudio/best[height<=1440]',
-    '1080': 'bestvideo[height<=1080]+bestaudio/best[height<=1080]',
-    '720':  'bestvideo[height<=720]+bestaudio/best[height<=720]',
-    '480':  'bestvideo[height<=480]+bestaudio/best[height<=480]',
-    '360':  'bestvideo[height<=360]+bestaudio/best[height<=360]',
+    '4k':   'bestvideo[height<=2160]+bestaudio/bestvideo[height<=1080]+bestaudio/best',
+    '1440': 'bestvideo[height<=1440]+bestaudio/bestvideo[height<=1080]+bestaudio/best',
+    '1080': 'bestvideo[height<=1080]+bestaudio/bestvideo[height<=720]+bestaudio/best',
+    '720':  'bestvideo[height<=720]+bestaudio/bestvideo[height<=480]+bestaudio/best',
+    '480':  'bestvideo[height<=480]+bestaudio/bestvideo[height<=360]+bestaudio/best',
+    '360':  'bestvideo[height<=360]+bestaudio/best',
 }
 
 QUALITY_MAP_AUDIO = {
@@ -25,7 +26,6 @@ QUALITY_MAP_AUDIO = {
 COOKIE_FILE = None
 
 def setup_cookies():
-    """Write YOUTUBE_COOKIES env var to a temp file once on startup."""
     global COOKIE_FILE
     cookie_content = os.environ.get('YOUTUBE_COOKIES', '').strip()
     if not cookie_content:
@@ -43,8 +43,9 @@ setup_cookies()
 
 
 @app.route('/')
+@cross_origin()
 def index():
-    cookie_status = "loaded" if COOKIE_FILE else "missing (downloads may fail)"
+    cookie_status = "loaded" if COOKIE_FILE else "missing"
     return jsonify({
         'status': 'U Tube Video Loader backend running ✓',
         'cookies': cookie_status
@@ -54,6 +55,13 @@ def index():
 @app.route('/download', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def download():
+    if request.method == 'OPTIONS':
+        response = make_response()
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        return response, 204
+
     data        = request.json
     url         = data.get('url')
     fmt         = data.get('format', 'mp4')
@@ -67,12 +75,11 @@ def download():
 
     tmpdir = tempfile.mkdtemp()
 
-    # Base options — always include cookies if available
     base_opts = {
         'outtmpl': os.path.join(tmpdir, '%(title)s.%(ext)s'),
         'addmetadata': embed_meta,
         'writethumbnail': write_thumb,
-        # Mimic a real browser to reduce bot detection
+        'ignoreerrors': False,
         'http_headers': {
             'User-Agent': (
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -110,6 +117,21 @@ def download():
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
+    except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e)
+        # If requested quality not available, retry with best available
+        if 'Requested format is not available' in error_msg or 'format' in error_msg.lower():
+            try:
+                fallback_opts = {
+                    **ydl_opts,
+                    'format': 'bestaudio/best' if fmt == 'mp3' else 'bestvideo+bestaudio/best',
+                }
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl2:
+                    ydl2.download([url])
+            except Exception as e2:
+                return jsonify({'error': str(e2)}), 500
+        else:
+            return jsonify({'error': error_msg}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -124,12 +146,14 @@ def download():
     safe_name = re.sub(r'[^\w\s\-.]', '', files[0]).strip()
     mime      = 'audio/mpeg' if fmt == 'mp3' else 'video/mp4'
 
-    return send_file(
+    response = make_response(send_file(
         filepath,
         as_attachment=True,
         download_name=safe_name,
         mimetype=mime,
-    )
+    ))
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    return response
 
 
 if __name__ == '__main__':
